@@ -10,7 +10,7 @@ e versionamento semântico.
 - Busca no Diário Oficial da União (aguardando API pública estável)
 - Resultados eleitorais do TSE
 
-## [0.6.0] — ainda não publicada
+## [0.6.0] — 2026-09-22
 
 ### Adicionado
 
