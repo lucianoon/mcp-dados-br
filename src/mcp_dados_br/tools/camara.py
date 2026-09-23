@@ -5,6 +5,7 @@ from mcp.types import CallToolResult
 from pydantic import BaseModel, Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.payload import campo, lendo, lista, objeto, texto
 from mcp_dados_br.saida import resultado
 from mcp_dados_br.validacao import (
     ANO_MINIMO,
@@ -18,6 +19,7 @@ from mcp_dados_br.validacao import (
 )
 
 _BASE_URL = "https://dadosabertos.camara.leg.br/api/v2"
+_FONTE = "Câmara dos Deputados"
 
 _TRUNCAR = 140
 _AGENDA_DIAS_MAX = 14
@@ -41,12 +43,19 @@ class ListaDeputados(BaseModel):
     deputados: list[Deputado]
 
 
-def _truncar(texto: str | None, limite: int = _TRUNCAR) -> str:
-    if not texto:
+def _registros(resposta: Any, contexto: str) -> list[dict[str, Any]]:
+    """Lista `dados` da resposta paginada da API da Câmara, cada item um objeto."""
+    itens = lista(objeto(resposta, _FONTE).get("dados"), _FONTE, "dados")
+    return [objeto(item, _FONTE, contexto) for item in itens]
+
+
+def _truncar(valor: Any, limite: int = _TRUNCAR) -> str:
+    if not valor:
         return ""
-    if len(texto) <= limite:
-        return texto
-    return f"{texto[:limite]}..."
+    conteudo = str(valor)
+    if len(conteudo) <= limite:
+        return conteudo
+    return f"{conteudo[:limite]}..."
 
 
 async def camara_deputados(
@@ -67,7 +76,7 @@ async def camara_deputados(
     """
     if legislatura is not None:
         validar_inteiro("legislatura", legislatura, 1, _LEGISLATURA_MAX)
-    dados: dict[str, Any] = await get_json(
+    dados = await get_json(
         f"{_BASE_URL}/deputados",
         params={
             "siglaUf": validar_uf(uf) if uf else None,
@@ -77,25 +86,23 @@ async def camara_deputados(
             "itens": 20,
         },
     )
-    deputados = dados.get("dados") or []
-    estruturado = ListaDeputados(
-        deputados=[
-            Deputado(
-                id=d["id"],
-                nome=d["nome"],
-                partido=d.get("siglaPartido") or "",
-                uf=d.get("siglaUf") or "",
-                url_foto=d.get("urlFoto"),
-            )
-            for d in deputados
-        ]
-    )
+    with lendo(_FONTE):
+        estruturado = ListaDeputados(
+            deputados=[
+                Deputado(
+                    id=campo(d, "id", _FONTE),
+                    nome=texto(d, "nome", _FONTE),
+                    partido=str(d.get("siglaPartido") or ""),
+                    uf=str(d.get("siglaUf") or ""),
+                    url_foto=d.get("urlFoto"),
+                )
+                for d in _registros(dados, "deputado")
+            ]
+        )
+    deputados = estruturado.deputados
     if not deputados:
         return resultado("Nenhum deputado encontrado para os filtros informados.", estruturado)
-    linhas = [
-        f"{d['id']} — {d['nome']} ({d['siglaPartido']}/{d['siglaUf']})"
-        for d in deputados
-    ]
+    linhas = [f"{d.id} — {d.nome} ({d.partido or '?'}/{d.uf or '?'})" for d in deputados]
     return resultado("\n".join(linhas), estruturado)
 
 
@@ -106,12 +113,12 @@ async def camara_detalhes_deputado(id_deputado: _Id) -> str:
         id_deputado: ID numérico do deputado (obtido via camara_deputados).
     """
     id_deputado = validar_id("id_deputado", id_deputado)
-    dados: dict[str, Any] = await get_json(f"{_BASE_URL}/deputados/{id_deputado}")
-    conteudo = dados.get("dados") or {}
-    ultimo = conteudo.get("ultimoStatus") or {}
+    dados = await get_json(f"{_BASE_URL}/deputados/{id_deputado}")
+    conteudo = objeto(objeto(dados, _FONTE).get("dados") or {}, _FONTE, "dados")
+    ultimo = objeto(conteudo.get("ultimoStatus") or {}, _FONTE, "ultimoStatus")
     if not ultimo:
         return f"Nenhum deputado encontrado com o ID {id_deputado}."
-    gabinete = ultimo.get("gabinete") or {}
+    gabinete = objeto(ultimo.get("gabinete") or {}, _FONTE, "gabinete")
     linhas = [
         f"Nome eleitoral: {ultimo.get('nomeEleitoral')}",
         f"Nome civil: {conteudo.get('nomeCivil')}",
@@ -139,7 +146,7 @@ async def camara_proposicoes(
         palavras_chave: Palavras-chave na ementa, ex.: "saude mental".
         sigla_tipo: Sigla do tipo, ex.: "PL", "PEC", "MPV".
     """
-    dados: dict[str, Any] = await get_json(
+    dados = await get_json(
         f"{_BASE_URL}/proposicoes",
         params={
             "ano": validar_ano("ano", ano) if ano is not None else None,
@@ -150,11 +157,13 @@ async def camara_proposicoes(
             "itens": 10,
         },
     )
-    proposicoes = dados.get("dados") or []
+    proposicoes = _registros(dados, "proposição")
     if not proposicoes:
         return "Nenhuma proposição encontrada para os filtros informados."
     linhas = [
-        f"{p['id']} — {p['siglaTipo']} {p['numero']}/{p['ano']} — {_truncar(p.get('ementa'))}"
+        f"{texto(p, 'id', _FONTE)} — {texto(p, 'siglaTipo', _FONTE)} "
+        f"{texto(p, 'numero', _FONTE)}/{texto(p, 'ano', _FONTE)} — "
+        f"{_truncar(p.get('ementa'))}"
         for p in proposicoes
     ]
     return "\n".join(linhas)
@@ -167,15 +176,15 @@ async def camara_votacoes_proposicao(id_proposicao: _Id) -> str:
         id_proposicao: ID numérico da proposição (obtido via camara_proposicoes).
     """
     id_proposicao = validar_id("id_proposicao", id_proposicao)
-    dados: dict[str, Any] = await get_json(
+    dados = await get_json(
         f"{_BASE_URL}/votacoes",
         params={"idProposicao": id_proposicao, "itens": 15},
     )
-    votacoes = dados.get("dados") or []
+    votacoes = _registros(dados, "votação")
     if not votacoes:
         return f"Nenhuma votação encontrada para a proposição {id_proposicao}."
     linhas = [
-        f"{v['id']} — {v.get('data', '?')} — "
+        f"{texto(v, 'id', _FONTE)} — {v.get('data', '?')} — "
         f"{_truncar(v.get('descricao') or v.get('aprovacao') or 'sem descrição')}"
         for v in votacoes
     ]
@@ -191,7 +200,7 @@ async def camara_agenda(dias: Annotated[int, Field(ge=1, le=_AGENDA_DIAS_MAX)] =
     dias = validar_inteiro("dias", dias, 1, _AGENDA_DIAS_MAX)
     hoje = date.today()
     fim = hoje + timedelta(days=dias)
-    dados: dict[str, Any] = await get_json(
+    dados = await get_json(
         f"{_BASE_URL}/eventos",
         params={
             "dataInicio": hoje.isoformat(),
@@ -199,7 +208,7 @@ async def camara_agenda(dias: Annotated[int, Field(ge=1, le=_AGENDA_DIAS_MAX)] =
             "itens": 30,
         },
     )
-    eventos = dados.get("dados") or []
+    eventos = _registros(dados, "evento")
     if not eventos:
         return "Nenhum evento agendado na Câmara para os próximos dias."
     linhas = [f"Agenda da Câmara ({hoje} a {fim}):"]
@@ -208,7 +217,8 @@ async def camara_agenda(dias: Annotated[int, Field(ge=1, le=_AGENDA_DIAS_MAX)] =
         situacao = e.get("situacao")
         situacao_txt = f" [{situacao}]" if situacao else ""
         linhas.append(
-            f"{inicio} — {_truncar(e.get('descricao'), 100)}{situacao_txt} (id {e['id']})"
+            f"{inicio} — {_truncar(e.get('descricao'), 100)}{situacao_txt} "
+            f"(id {texto(e, 'id', _FONTE)})"
         )
     return "\n".join(linhas)
 
@@ -225,11 +235,11 @@ async def camara_tramitacao(
     """
     id_proposicao = validar_id("id_proposicao", id_proposicao)
     ultimas = validar_inteiro("ultimas", ultimas, 1, _TRAMITACAO_MAX)
-    dados: dict[str, Any] = await get_json(
+    dados = await get_json(
         f"{_BASE_URL}/proposicoes/{id_proposicao}/tramitacoes",
         params={"itens": max(ultimas * 2, 20)},
     )
-    tramitacoes = dados.get("dados") or []
+    tramitacoes = _registros(dados, "tramitação")
     if not tramitacoes:
         return f"Nenhuma tramitação encontrada para a proposição {id_proposicao}."
     recentes = tramitacoes[-ultimas:]

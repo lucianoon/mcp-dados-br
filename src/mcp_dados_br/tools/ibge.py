@@ -3,7 +3,8 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from mcp_dados_br.http import ApiError, get_json
+from mcp_dados_br.http import get_json
+from mcp_dados_br.payload import aninhado, lendo, lista, objeto, texto
 from mcp_dados_br.validacao import (
     ANO_MINIMO,
     codigo_uf,
@@ -17,6 +18,8 @@ _SIDRA_URL = "https://servicodados.ibge.gov.br/api/v3/agregados"
 _LOCALIDADES_URL = "https://servicodados.ibge.gov.br/api/v1/localidades"
 
 _MAX_LINHAS = 40
+_SIDRA = "IBGE/SIDRA"
+_MUNICIPIOS = "IBGE/Localidades"
 
 # agregado, variavel e periodos viram segmentos do caminho da URL: só dígitos e
 # os separadores da sintaxe SIDRA, nunca "/" ou "?".
@@ -43,34 +46,41 @@ async def _consultar_sidra(
 
 def _sufixo_classificacao(resultado: dict[str, Any]) -> str:
     partes: list[str] = []
-    for classificacao in resultado.get("classificacoes") or []:
-        categorias = classificacao.get("categoria") or {}
-        for nome in categorias.values():
+    for classificacao in lista(resultado.get("classificacoes"), _SIDRA, "classificacoes"):
+        categorias = objeto(classificacao, _SIDRA, "classificação").get("categoria") or {}
+        for nome in objeto(categorias, _SIDRA, "categoria").values():
             if nome != "Total":
-                partes.append(nome)
+                partes.append(str(nome))
     if not partes:
         return ""
     return f" ({'/'.join(partes)})"
 
 
-def _formatar_sidra(dados: Any, max_linhas: int = _MAX_LINHAS) -> str:
-    if not isinstance(dados, list):
-        raise ApiError(f"Resposta inesperada do SIDRA: {str(dados)[:200]}")
+def _linhas_sidra(dados: Any) -> list[str]:
     linhas: list[str] = []
-    for item in dados:
+    for item in lista(dados, _SIDRA):
+        item = objeto(item, _SIDRA, "variável")
         nome_variavel = item.get("variavel", "?")
         unidade = item.get("unidade", "")
-        for resultado in item.get("resultados") or []:
+        for resultado in lista(item.get("resultados"), _SIDRA, "resultados"):
+            resultado = objeto(resultado, _SIDRA, "resultado")
             sufixo = _sufixo_classificacao(resultado)
-            for serie in resultado.get("series") or []:
-                localidade = serie.get("localidade", {}).get("nome", "?")
-                for periodo, valor in (serie.get("serie") or {}).items():
+            for serie in lista(resultado.get("series"), _SIDRA, "series"):
+                localidade = aninhado(serie, _SIDRA, "localidade", "nome") or "?"
+                valores = objeto(objeto(serie, _SIDRA, "série").get("serie") or {}, _SIDRA, "serie")
+                for periodo, valor in valores.items():
                     if valor in (None, "", "..."):
                         continue
                     linhas.append(
                         f"{nome_variavel}{sufixo} ({unidade}) — "
                         f"{localidade} [{periodo}]: {valor}"
                     )
+    return linhas
+
+
+def _formatar_sidra(dados: Any, max_linhas: int = _MAX_LINHAS) -> str:
+    with lendo(_SIDRA):
+        linhas = _linhas_sidra(dados)
     if not linhas:
         return "Nenhum dado encontrado para os parâmetros informados."
     if len(linhas) > max_linhas:
@@ -118,19 +128,25 @@ async def ibge_municipios(nome: str, uf: str | None = None) -> str:
         dados = await get_json(url)
     else:
         dados = await get_json(f"{_LOCALIDADES_URL}/municipios")
+    fonte = _MUNICIPIOS
+    municipios = [objeto(m, fonte, "município") for m in lista(dados, fonte)]
     correspondencias = [
-        m for m in dados
+        m for m in municipios
         if termo in str(m.get("nome", "")).casefold()
     ]
     if not correspondencias:
         return f"Nenhum município encontrado com o nome {nome!r}."
 
     def _sigla_uf(m: dict[str, Any]) -> str:
-        uf_info = (m.get("microrregiao") or {}).get("mesorregiao", {}).get("UF", {})
-        return str(uf_info.get("sigla") or "?")
+        # Municípios criados depois de 2017 podem vir com microrregiao null; a
+        # UF continua disponível pela região imediata.
+        sigla = aninhado(m, fonte, "microrregiao", "mesorregiao", "UF", "sigla") or aninhado(
+            m, fonte, "regiao-imediata", "regiao-intermediaria", "UF", "sigla"
+        )
+        return str(sigla or "?")
 
     linhas = [
-        f"{m['id']} — {m['nome']} — {_sigla_uf(m)}"
+        f"{texto(m, 'id', fonte)} — {texto(m, 'nome', fonte)} — {_sigla_uf(m)}"
         for m in correspondencias[:20]
     ]
     if len(correspondencias) > 20:

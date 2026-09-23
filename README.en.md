@@ -198,6 +198,7 @@ src/mcp_dados_br/
 ├── validacao.py     # Tool argument validation (state codes, currency, dates, limits)
 ├── saida.py         # Tool result with text + structuredContent
 ├── http.py          # Shared HTTP client, retries and error handling
+├── payload.py       # Defensive reading of API responses (source and field in the error)
 ├── cache.py         # In-memory TTL cache for API responses
 └── tools/
     ├── ibge.py      # SIDRA v3 + localities v1
@@ -217,6 +218,9 @@ src/mcp_dados_br/
 - 10-minute TTL cache per identical request, with an unambiguous key (sorted JSON
   of URL and parameters)
 - Automatic retries on network failures and on `429`/`502`/`503`/`504`
+- A format change in an upstream API (renamed field, different type) becomes a
+  tool error (`isError: true`) naming the source and the field, e.g.
+  `Resposta inesperada de BCB/PTAX: campo 'cotacaoCompra' ausente`
 - Output formatted as model-readable text; `bcb_serie`, `bcb_cambio` and
   `camara_deputados` also return `structuredContent` with an `outputSchema`
   (ISO dates, numeric values), keeping the text as a fallback
@@ -228,7 +232,7 @@ src/mcp_dados_br/
 - [x] v0.3 — Chamber agenda, streamable HTTP transport and scheduled integration tests in CI
 - [x] v0.4 — Legislative progress, named SGS shortcuts, Docker image
 - [x] v0.5 — Published on PyPI (`uvx mcp-dados-br`), MCP Registry and Smithery
-- [ ] v0.6 — Input validation, bearer auth for HTTP mode and structured output
+- [x] v0.6 — Input validation, bearer auth for HTTP mode and structured output
 - [ ] DOU: search the Federal Official Gazette (waiting for a stable public API)
 - [ ] TSE: election results
 

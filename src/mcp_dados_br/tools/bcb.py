@@ -5,6 +5,7 @@ from mcp.types import CallToolResult
 from pydantic import BaseModel, Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.payload import campo, lendo, lista, numero, objeto, texto
 from mcp_dados_br.saida import resultado
 from mcp_dados_br.validacao import (
     EntradaInvalida,
@@ -139,29 +140,32 @@ async def bcb_serie(
     if inicio > fim:
         raise EntradaInvalida("data_inicial deve ser anterior ou igual a data_final.")
     url = f"{_SGS_URL}/bcdata.sgs.{codigo}/dados"
-    dados: list[dict[str, Any]] = await get_json(url, params={
+    fonte = "BCB/SGS"
+    resposta = await get_json(url, params={
         "formato": "json",
         "dataInicial": _data_sgs(inicio.isoformat()),
         "dataFinal": _data_sgs(fim.isoformat()),
     })
-    exibidos = dados[-_SGS_MAX_EXIBIDOS:]
-    estruturado = SerieSGS(
-        codigo=codigo,
-        data_inicial=inicio,
-        data_final=fim,
-        total_registros=len(dados),
-        registros=[
-            RegistroSGS(
-                data=datetime.strptime(item["data"], "%d/%m/%Y").date(),
-                valor=_valor_sgs(item.get("valor")),
-            )
-            for item in exibidos
-        ],
-    )
+    with lendo(fonte):
+        dados = lista(resposta, fonte)
+        exibidos = [objeto(item, fonte, "registro") for item in dados[-_SGS_MAX_EXIBIDOS:]]
+        estruturado = SerieSGS(
+            codigo=codigo,
+            data_inicial=inicio,
+            data_final=fim,
+            total_registros=len(dados),
+            registros=[
+                RegistroSGS(
+                    data=datetime.strptime(texto(item, "data", fonte), "%d/%m/%Y").date(),
+                    valor=_valor_sgs(item.get("valor")),
+                )
+                for item in exibidos
+            ],
+        )
     if not dados:
-        texto = f"Nenhum dado retornado para a série {codigo} no período informado."
-        return resultado(texto, estruturado)
-    linhas = [f"{item['data']}: {item['valor']}" for item in exibidos]
+        vazio = f"Nenhum dado retornado para a série {codigo} no período informado."
+        return resultado(vazio, estruturado)
+    linhas = [f"{item['data']}: {item.get('valor')}" for item in exibidos]
     if len(dados) > _SGS_MAX_EXIBIDOS:
         linhas.insert(
             0, f"Série {codigo}: {len(dados)} registros; exibindo os últimos {_SGS_MAX_EXIBIDOS}."
@@ -194,51 +198,53 @@ async def bcb_cambio(
         f"{_PTAX_URL}/CotacaoMoedaPeriodo(moeda=@moeda,"
         f"dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
     )
-    dados: dict[str, Any] = await get_json(url, params={
+    fonte = "BCB/PTAX"
+    dados = await get_json(url, params={
         "@moeda": f"'{moeda}'",
         "@dataInicial": f"'{_data_ptax(inicio.isoformat())}'",
         "@dataFinalCotacao": f"'{_data_ptax(fim.isoformat())}'",
         "$format": "json",
         "$top": janela * _PTAX_BOLETINS_POR_DIA,
     })
-    cotacoes = dados.get("value") or []
+    cotacoes = [
+        objeto(c, fonte, "cotação")
+        for c in lista(objeto(dados, fonte).get("value"), fonte, "value")
+    ]
     if not cotacoes:
         vazio = CambioPTAX(
             moeda=moeda, cotacoes=[], ultima=None, compra_min=None, compra_max=None,
             compra_media=None, venda_min=None, venda_max=None,
         )
-        texto = (
+        aviso = (
             f"Nenhuma cotação encontrada para {moeda}. "
             "Verifique o símbolo com a tool bcb_moedas."
         )
-        return resultado(texto, vazio)
+        return resultado(aviso, vazio)
     fechamentos = [c for c in cotacoes if c.get("tipoBoletim") == "Fechamento"]
     base = fechamentos if fechamentos else cotacoes
     ultimas = base[-dias:] if dias < len(base) else base
-    compras = [float(c["cotacaoCompra"]) for c in ultimas]
-    vendas = [float(c["cotacaoVenda"]) for c in ultimas]
-    ultima = ultimas[-1]
+    with lendo(fonte):
+        estruturadas = [
+            CotacaoPTAX(
+                data=date.fromisoformat(texto(c, "dataHoraCotacao", fonte)[:10]),
+                compra=numero(c, "cotacaoCompra", fonte),
+                venda=numero(c, "cotacaoVenda", fonte),
+            )
+            for c in ultimas
+        ]
+    compras = [c.compra for c in estruturadas]
+    vendas = [c.venda for c in estruturadas]
+    ultima = estruturadas[-1]
     resumo = [
-        f"PTAX {moeda} — última cotação ({ultima['dataHoraCotacao'][:10]}): "
-        f"compra R$ {ultima['cotacaoCompra']}, venda R$ {ultima['cotacaoVenda']}",
+        f"PTAX {moeda} — última cotação ({ultima.data.isoformat()}): "
+        f"compra R$ {ultima.compra}, venda R$ {ultima.venda}",
         f"Período ({len(ultimas)} cotações): compra mín. R$ {min(compras)}, "
         f"máx. R$ {max(compras)}, média R$ {sum(compras) / len(compras):.4f}; "
         f"venda mín. R$ {min(vendas)}, máx. R$ {max(vendas)}",
     ]
     historico = [
-        (
-            f"{c['dataHoraCotacao'][:10]}: compra R$ {c['cotacaoCompra']} / "
-            f"venda R$ {c['cotacaoVenda']}"
-        )
-        for c in ultimas
-    ]
-    estruturadas = [
-        CotacaoPTAX(
-            data=date.fromisoformat(c["dataHoraCotacao"][:10]),
-            compra=float(c["cotacaoCompra"]),
-            venda=float(c["cotacaoVenda"]),
-        )
-        for c in ultimas
+        f"{c.data.isoformat()}: compra R$ {c.compra} / venda R$ {c.venda}"
+        for c in estruturadas
     ]
     estruturado = CambioPTAX(
         moeda=moeda,
@@ -255,11 +261,12 @@ async def bcb_cambio(
 
 async def bcb_moedas() -> str:
     """Lista as moedas com cotação PTAX disponíveis no Banco Central."""
-    dados: dict[str, Any] = await get_json(
-        f"{_PTAX_URL}/Moedas", params={"$format": "json"}
-    )
-    moedas = dados.get("value") or []
-    linhas = [f"{m['simbolo']} — {m['nomeFormatado']}" for m in moedas]
+    fonte = "BCB/PTAX"
+    dados = await get_json(f"{_PTAX_URL}/Moedas", params={"$format": "json"})
+    moedas = lista(objeto(dados, fonte).get("value"), fonte, "value")
+    linhas = [
+        f"{texto(m, 'simbolo', fonte)} — {m.get('nomeFormatado') or '?'}" for m in moedas
+    ]
     return "\n".join(linhas)
 
 
@@ -277,7 +284,10 @@ def _formatar_focus(indicador: str, registros: list[dict[str, Any]]) -> str:
 
     def mediana(r: dict[str, Any]) -> float:
         valor = r.get("Mediana")
-        return float(valor) if valor is not None else float("inf")
+        try:
+            return float(valor) if valor is not None else float("inf")
+        except (TypeError, ValueError):
+            return float("inf")
 
     ordenados = sorted(do_dia, key=mediana)
     linhas = [
@@ -316,7 +326,8 @@ async def bcb_focus(indicador: str = "selic") -> str:
     filtro = f"Data ge '{desde}'"
     if filtro_indicador:
         filtro += f" and {filtro_indicador}"
-    dados: dict[str, Any] = await get_json(
+    fonte = "BCB/Focus"
+    dados = await get_json(
         f"{_FOCUS_URL}/{entidade}",
         params={
             "$format": "json",
@@ -325,7 +336,10 @@ async def bcb_focus(indicador: str = "selic") -> str:
             "$top": 60,
         },
     )
-    registros = dados.get("value") or []
+    registros = [
+        objeto(r, fonte, "expectativa")
+        for r in lista(objeto(dados, fonte).get("value"), fonte, "value")
+    ]
     if chave == "selic":
         registros = [r for r in registros if r.get("baseCalculo") == 0]
     if not registros:
@@ -333,4 +347,7 @@ async def bcb_focus(indicador: str = "selic") -> str:
             f"Nenhuma expectativa recente encontrada para {chave}. "
             "O boletim Focus pode não ter sido publicado nos últimos 7 dias."
         )
-    return _formatar_focus(chave, registros)
+    for r in registros:
+        campo(r, "Data", fonte)
+    with lendo(fonte):
+        return _formatar_focus(chave, registros)
