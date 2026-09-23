@@ -1,6 +1,6 @@
 [project]
 name = "mcp-dados-br"
-version = "0.5.2"
+version = "0.6.0"
 description = "Servidor MCP com dados públicos brasileiros: IBGE, Banco Central, INMET, Câmara dos Deputados e Senado Federal"
 readme = "README.md"
 license = "MIT"
