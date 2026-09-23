@@ -1,8 +1,11 @@
 
+from datetime import date
+
 import httpx
 import pytest
 import respx
 
+from mcp_dados_br.saida import texto_de
 from mcp_dados_br.tools import bcb
 
 PTAX_URL = (
@@ -52,7 +55,9 @@ async def test_bcb_serie_formata_registros() -> None:
             ],
         )
     )
-    saida = await bcb.bcb_serie(codigo=433, data_inicial="2026-06-01", data_final="2026-07-31")
+    saida = texto_de(
+        await bcb.bcb_serie(codigo=433, data_inicial="2026-06-01", data_final="2026-07-31")
+    )
     assert "Série 433:" in saida
     assert "01/06/2026: 0.24" in saida
     assert "01/07/2026: 0.17" in saida
@@ -78,7 +83,7 @@ async def test_bcb_serie_atalho_ipca_resolve_codigo_433() -> None:
     route = respx.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.433/dados").mock(
         return_value=httpx.Response(200, json=[{"data": "01/07/2026", "valor": "0.17"}])
     )
-    saida = await bcb.bcb_serie(indicador="IPCA", data_inicial="2026-07-01")
+    saida = texto_de(await bcb.bcb_serie(indicador="IPCA", data_inicial="2026-07-01"))
     assert "/bcdata.sgs.433/" in str(route.calls.last.request.url)
     assert "01/07/2026: 0.17" in saida
 
@@ -88,7 +93,7 @@ async def test_bcb_cambio_resume_apenas_fechamento() -> None:
     route = respx.get(PTAX_URL).mock(
         return_value=httpx.Response(200, json=RESPOSTA_PTAX)
     )
-    saida = await bcb.bcb_cambio("USD", dias=2)
+    saida = texto_de(await bcb.bcb_cambio("USD", dias=2))
     requisicao = route.calls.last.request.url.params
     assert requisicao["@moeda"] == "'USD'"
     assert requisicao["@dataInicial"].startswith("'")
@@ -101,7 +106,7 @@ async def test_bcb_cambio_resume_apenas_fechamento() -> None:
 @respx.mock
 async def test_bcb_cambio_moeda_inexistente() -> None:
     respx.get(PTAX_URL).mock(return_value=httpx.Response(200, json={"value": []}))
-    saida = await bcb.bcb_cambio("XXX")
+    saida = texto_de(await bcb.bcb_cambio("XXX"))
     assert "Nenhuma cotação encontrada" in saida
 
 
@@ -117,3 +122,19 @@ async def test_bcb_moedas_lista_simbolos() -> None:
     )
     saida = await bcb.bcb_moedas()
     assert "EUR — Euro" in saida
+
+
+@respx.mock
+async def test_bcb_cambio_top_cobre_todos_os_boletins_da_janela() -> None:
+    # Com $top = dias * 2 o OData cortava os dias mais recentes: são até 5
+    # boletins PTAX por dia útil. Em 22/09/2026, dias=7 devolvia a cotação de 15/09.
+    route = respx.get(PTAX_URL).mock(return_value=httpx.Response(200, json={"value": []}))
+    await bcb.bcb_cambio("USD", dias=7)
+    params = route.calls.last.request.url.params
+    inicio = params["@dataInicial"].strip("'")
+    fim = params["@dataFinalCotacao"].strip("'")
+    dias_corridos = (
+        date(int(fim[6:]), int(fim[:2]), int(fim[3:5]))
+        - date(int(inicio[6:]), int(inicio[:2]), int(inicio[3:5]))
+    ).days
+    assert int(params["$top"]) >= dias_corridos * 5
