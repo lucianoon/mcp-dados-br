@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.payload import aninhado, campo, lista, objeto
 from mcp_dados_br.validacao import (
     ANO_MINIMO,
     validar_ano,
@@ -15,6 +16,7 @@ from mcp_dados_br.validacao import (
 )
 
 _SENADO_URL = "https://legis.senado.leg.br/dadosabertos"
+_FONTE = "Senado Federal"
 
 _TRUNCAR = 140
 
@@ -22,20 +24,25 @@ _SIGLAS_VOTO = {"S": "sim", "N": "não", "P": "abst.", "L": "liberado"}
 _ORDEM_VOTO = ["S", "N", "P", "L"]
 
 
-def _lista_ou_unica(valor: Any) -> list[dict[str, Any]]:
-    if valor is None:
-        return []
+def _lista_ou_unica(valor: Any, contexto: str) -> list[dict[str, Any]]:
+    """O XML convertido em JSON vira objeto quando há um item só e lista quando há vários."""
     if isinstance(valor, dict):
         return [valor]
-    return list(valor)
+    return [objeto(item, _FONTE, contexto) for item in lista(valor, _FONTE, contexto)]
 
 
-def _truncar(texto: str | None, limite: int = _TRUNCAR) -> str:
-    if not texto:
+def _raiz(dados: Any, chave: str) -> dict[str, Any]:
+    """Nó raiz obrigatório da resposta; sem ele o formato mudou."""
+    return objeto(campo(dados, chave, _FONTE), _FONTE, chave)
+
+
+def _truncar(valor: Any, limite: int = _TRUNCAR) -> str:
+    if not valor:
         return ""
-    if len(texto) <= limite:
-        return texto
-    return f"{texto[:limite]}..."
+    conteudo = str(valor)
+    if len(conteudo) <= limite:
+        return conteudo
+    return f"{conteudo[:limite]}..."
 
 
 async def senado_senadores(uf: str | None = None, busca: str | None = None) -> str:
@@ -47,13 +54,16 @@ async def senado_senadores(uf: str | None = None, busca: str | None = None) -> s
     """
     sigla_uf = validar_uf(uf) if uf else ""
     termo = validar_texto("busca", busca, maximo=100).casefold() if busca else ""
-    dados: dict[str, Any] = await get_json(f"{_SENADO_URL}/senador/lista/atual.json")
+    dados = await get_json(f"{_SENADO_URL}/senador/lista/atual.json")
+    raiz = _raiz(dados, "ListaParlamentarEmExercicio")
     parlamentares = _lista_ou_unica(
-        dados.get("ListaParlamentarEmExercicio", {}).get("Parlamentares", {}).get("Parlamentar")
+        aninhado(raiz, _FONTE, "Parlamentares", "Parlamentar"), "Parlamentar"
     )
     correspondentes: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for parlamentar in parlamentares:
-        identificacao = parlamentar.get("IdentificacaoParlamentar") or {}
+        identificacao = objeto(
+            parlamentar.get("IdentificacaoParlamentar") or {}, _FONTE, "IdentificacaoParlamentar"
+        )
         if sigla_uf and identificacao.get("UfParlamentar") != sigla_uf:
             continue
         nome = (
@@ -93,12 +103,13 @@ async def senado_materias(
     termo = (
         validar_texto("palavras_chave", palavras_chave).casefold() if palavras_chave else ""
     )
-    dados: dict[str, Any] = await get_json(
+    dados = await get_json(
         f"{_SENADO_URL}/materia/pesquisa/lista.json",
         params={"sigla": sigla, "ano": ano_referencia},
     )
     materias = _lista_ou_unica(
-        dados.get("PesquisaBasicaMateria", {}).get("Materias", {}).get("Materia")
+        aninhado(_raiz(dados, "PesquisaBasicaMateria"), _FONTE, "Materias", "Materia"),
+        "Materia",
     )
     if termo:
         materias = [m for m in materias if termo in str(m.get("Ementa", "")).casefold()]
@@ -116,7 +127,9 @@ async def senado_materias(
 
 
 def _placar_votos(votos: dict[str, Any]) -> str:
-    individuais = _lista_ou_unica(votos.get("VotoParlamentar"))
+    individuais = _lista_ou_unica(
+        objeto(votos, _FONTE, "Votos").get("VotoParlamentar"), "VotoParlamentar"
+    )
     contagem = Counter(str(v.get("SiglaVoto") or "?").strip() for v in individuais)
     ordenadas = sorted(
         contagem,
@@ -139,16 +152,16 @@ async def senado_votacoes(codigo_materia: Annotated[int, Field(ge=1)]) -> str:
         codigo_materia: Código numérico da matéria (obtido via senado_materias).
     """
     codigo_materia = validar_id("codigo_materia", codigo_materia)
-    dados: dict[str, Any] = await get_json(
-        f"{_SENADO_URL}/materia/votacoes/{codigo_materia}.json"
+    dados = await get_json(f"{_SENADO_URL}/materia/votacoes/{codigo_materia}.json")
+    votacoes = _lista_ou_unica(
+        aninhado(_raiz(dados, "VotacaoMateria"), _FONTE, "Materia", "Votacoes", "Votacao"),
+        "Votacao",
     )
-    materia = dados.get("VotacaoMateria", {}).get("Materia") or {}
-    votacoes = _lista_ou_unica(materia.get("Votacoes", {}).get("Votacao"))
     if not votacoes:
         return f"Nenhuma votação registrada para a matéria {codigo_materia}."
     linhas = [f"{len(votacoes)} votações da matéria {codigo_materia}:"]
     for vo in votacoes[:10]:
-        sessao = vo.get("SessaoPlenaria") or {}
+        sessao = objeto(vo.get("SessaoPlenaria") or {}, _FONTE, "SessaoPlenaria")
         quando = str(sessao.get("DataSessao", "?"))
         resultado = vo.get("DescricaoResultado") or "sem resultado"
         linhas.append(

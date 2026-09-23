@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.payload import lista, objeto, texto
 from mcp_dados_br.validacao import EntradaInvalida, validar_inteiro, validar_padrao, validar_uf
 
 _INMET_URL = "https://apitempo.inmet.gov.br"
@@ -44,6 +45,14 @@ def _normalizar_tipo(tipo: str) -> str:
     return codigo
 
 
+def _altitude(valor: Any) -> str:
+    # Altitude é informativa: valor fora do formato é omitido, não derruba a lista.
+    try:
+        return f", {float(valor):.0f} m" if valor else ""
+    except (TypeError, ValueError):
+        return ""
+
+
 async def inmet_estacoes(tipo: str = "T", uf: str | None = None) -> str:
     """Lista estações meteorológicas do INMET (não requer autenticação).
 
@@ -53,7 +62,9 @@ async def inmet_estacoes(tipo: str = "T", uf: str | None = None) -> str:
     """
     codigo_tipo = _normalizar_tipo(tipo)
     sigla = validar_uf(uf) if uf else None
-    estacoes: list[dict[str, Any]] = await get_json(f"{_INMET_URL}/estacoes/{codigo_tipo}")
+    fonte = "INMET/estações"
+    dados = await get_json(f"{_INMET_URL}/estacoes/{codigo_tipo}")
+    estacoes = [objeto(e, fonte, "estação") for e in lista(dados, fonte)]
     if sigla:
         estacoes = [e for e in estacoes if e.get("SG_ESTADO") == sigla]
     operantes = [e for e in estacoes if e.get("CD_SITUACAO") != "Desativada"]
@@ -62,11 +73,10 @@ async def inmet_estacoes(tipo: str = "T", uf: str | None = None) -> str:
         return f"Nenhuma estação {rotulo} encontrada para os filtros informados."
     linhas = [f"{len(operantes)} estações {rotulo}:"]
     for e in operantes[:_MAX_LINHAS]:
-        altitude = e.get("VL_ALTITUDE")
-        altitude_txt = f", {float(altitude):.0f} m" if altitude else ""
+        altitude_txt = _altitude(e.get("VL_ALTITUDE"))
         capital = " [capital]" if e.get("FL_CAPITAL") == "S" else ""
         linhas.append(
-            f"{e.get('CD_ESTACAO')} — {e.get('DC_NOME')} "
+            f"{texto(e, 'CD_ESTACAO', fonte)} — {e.get('DC_NOME')} "
             f"({e.get('SG_ESTADO')}{capital}{altitude_txt})"
         )
     if len(operantes) > _MAX_LINHAS:
@@ -114,7 +124,9 @@ async def inmet_dados(
         f"{_INMET_URL}/token/estacao/{inicio.isoformat()}/"
         f"{fim.isoformat()}/{estacao}/{token}"
     )
-    registros: list[dict[str, Any]] = await get_json(url)
+    fonte = "INMET/observações"
+    dados = await get_json(url)
+    registros = [objeto(r, fonte, "registro") for r in lista(dados, fonte)]
     if not registros:
         return f"Nenhum dado retornado para a estação {estacao} no período."
     ultimos = registros[-72:]
