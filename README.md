@@ -200,6 +200,7 @@ src/mcp_dados_br/
 ├── validacao.py     # Validação dos argumentos das tools (UF, moeda, datas, limites)
 ├── saida.py         # Resultado com texto + structuredContent
 ├── http.py          # Cliente HTTP compartilhado, retry e tratamento de erros
+├── payload.py       # Leitura defensiva das respostas das APIs (fonte e campo no erro)
 ├── cache.py         # Cache TTL em memória para as respostas das APIs
 └── tools/
     ├── ibge.py      # SIDRA v3 + localidades v1
@@ -219,6 +220,9 @@ src/mcp_dados_br/
 - Cache TTL de 10 minutos por requisição idêntica, com chave inequívoca (JSON
   ordenado de URL e parâmetros)
 - Retry automático em falhas de rede e em `429`/`502`/`503`/`504`
+- Mudança de formato numa API upstream (campo renomeado, tipo trocado) vira
+  erro da tool (`isError: true`) com a fonte e o campo, ex.:
+  `Resposta inesperada de BCB/PTAX: campo 'cotacaoCompra' ausente`
 - Saídas formatadas como texto legível pelo modelo; `bcb_serie`, `bcb_cambio` e
   `camara_deputados` também devolvem `structuredContent` com `outputSchema`
   (datas ISO, valores numéricos), mantendo o texto como fallback
@@ -230,7 +234,7 @@ src/mcp_dados_br/
 - [x] v0.3 — Agenda da Câmara, transporte streamable-http e testes de integração agendados no CI
 - [x] v0.4 — Tramitações, atalhos nomeados no SGS, imagem Docker
 - [x] v0.5 — Publicação no PyPI (`uvx mcp-dados-br`), MCP Registry e Smithery
-- [ ] v0.6 — Validação de entrada, autenticação bearer no modo HTTP e saída estruturada
+- [x] v0.6 — Validação de entrada, autenticação bearer no modo HTTP e saída estruturada
 - [ ] DOU: busca no Diário Oficial da União (aguardando API pública estável)
 - [ ] TSE: resultados eleitorais
 

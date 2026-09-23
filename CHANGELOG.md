@@ -11,6 +11,24 @@ e versionamento semântico.
   `MCP_TRANSPORTE`, `MCP_PORTA`, `MCP_HOST` e `MCP_AUTH_TOKEN`, URL
   `http://127.0.0.1:{MCP_PORTA}/mcp`), além do stdio; o publish sincroniza a
   versão de todos os pacotes
+- Teste ponta a ponta no protocolo MCP (`tests/test_e2e_mcp.py`): o cliente do
+  SDK conversa em processo com o servidor real, nos modos `legacy` (handshake
+  `initialize` e JSON-RPC em streams de memória) e `auto`; confere as 19 tools,
+  o `outputSchema` das estruturadas, `content`/`structuredContent` com APIs
+  simuladas e `isError` para entrada inválida e payload inesperado
+
+### Corrigido
+
+- Leitura defensiva dos payloads em todas as tools (`payload.py`): campo
+  ausente, tipo trocado ou resposta truncada numa API upstream deixam de virar
+  `KeyError`/`TypeError`/`IndexError` genéricos ("Error executing tool") e
+  viram `ApiError` com fonte e campo, ex.:
+  `Resposta inesperada de BCB/PTAX: campo 'cotacaoCompra' ausente`
+- `ibge_municipios` obtém a UF pela região imediata quando `microrregiao` vem
+  `null` (municípios criados recentemente)
+- Altitude fora do formato em `inmet_estacoes` é omitida em vez de derrubar a
+  lista
+- README (PT e EN): roadmap marca a v0.6 como entregue
 
 ### Planejado
 
