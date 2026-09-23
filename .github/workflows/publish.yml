@@ -81,7 +81,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           jq --arg v "$VERSION" '.version = $v' server.json > server.tmp && mv server.tmp server.json
-          jq --arg v "$VERSION" '.packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
+          jq --arg v "$VERSION" '.packages[].version = $v' server.json > server.tmp && mv server.tmp server.json
 
       - name: Autentica no MCP Registry (OIDC)
         run: ./mcp-publisher login github-oidc
