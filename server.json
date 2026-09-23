@@ -8,18 +8,82 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/lucianoon/mcp-dados-br",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "mcp-dados-br",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
+        {
+          "name": "INMET_TOKEN",
+          "description": "Token opcional do INMET para dados horários observados",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "MCP_LOG_LEVEL",
+          "description": "Nível de log em stderr (DEBUG, INFO, WARNING)",
+          "format": "string",
+          "default": "WARNING",
+          "isRequired": false
+        }
+      ]
+    },
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mcp-dados-br",
+      "version": "0.6.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:{MCP_PORTA}/mcp",
+        "headers": [
+          {
+            "name": "Authorization",
+            "description": "Bearer <MCP_AUTH_TOKEN>, quando o token estiver definido",
+            "format": "string",
+            "isRequired": false,
+            "isSecret": true
+          }
+        ]
+      },
+      "environmentVariables": [
+        {
+          "name": "MCP_TRANSPORTE",
+          "description": "Seleciona o transporte HTTP",
+          "format": "string",
+          "value": "streamable-http",
+          "isRequired": true
+        },
+        {
+          "name": "MCP_PORTA",
+          "description": "Porta HTTP",
+          "format": "number",
+          "default": "8000",
+          "isRequired": false
+        },
+        {
+          "name": "MCP_HOST",
+          "description": "Endereço de escuta (padrão só loopback)",
+          "format": "string",
+          "default": "127.0.0.1",
+          "isRequired": false
+        },
+        {
+          "name": "MCP_AUTH_TOKEN",
+          "description": "Token bearer exigido em toda requisição HTTP; recomendado fora do loopback",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": true
+        },
         {
           "name": "INMET_TOKEN",
           "description": "Token opcional do INMET para dados horários observados",

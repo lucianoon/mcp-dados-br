@@ -5,6 +5,13 @@ e versionamento semântico.
 
 ## [Não lançado]
 
+### Adicionado
+
+- `server.json` declara também o transporte `streamable-http` (pacote PyPI com
+  `MCP_TRANSPORTE`, `MCP_PORTA`, `MCP_HOST` e `MCP_AUTH_TOKEN`, URL
+  `http://127.0.0.1:{MCP_PORTA}/mcp`), além do stdio; o publish sincroniza a
+  versão de todos os pacotes
+
 ### Planejado
 
 - Busca no Diário Oficial da União (aguardando API pública estável)
