@@ -50,6 +50,7 @@ def test_main_streamable_http_respeita_host_e_porta(monkeypatch: pytest.MonkeyPa
     falso = _ServidorFalso()
     monkeypatch.setattr(modulo_server, "create_server", lambda: falso)
     monkeypatch.setenv("MCP_TRANSPORTE", "streamable-http")
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("MCP_HOST", "0.0.0.0")
     monkeypatch.setenv("MCP_PORTA", "9000")
 
@@ -64,6 +65,7 @@ def test_main_streamable_http_escuta_apenas_local_por_padrao(
     falso = _ServidorFalso()
     monkeypatch.setattr(modulo_server, "create_server", lambda: falso)
     monkeypatch.setenv("MCP_TRANSPORTE", "streamable-http")
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("MCP_HOST", raising=False)
     monkeypatch.delenv("MCP_PORTA", raising=False)
 

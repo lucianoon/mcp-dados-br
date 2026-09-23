@@ -17,6 +17,10 @@ dependencies = [
     "httpx>=0.28",
     "mcp>=2.1.1",
     "pydantic>=2.13.5",
+    # Usados diretamente pela autenticação bearer do transporte HTTP; já vêm
+    # com o SDK MCP, declarados aqui para não depender de dependência transitiva.
+    "starlette>=0.48",
+    "uvicorn>=0.31.1",
 ]
 
 [project.urls]

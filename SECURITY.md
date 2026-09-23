@@ -24,6 +24,8 @@ linguagem. São especialmente relevantes relatos sobre:
   cliente (prompt injection via dados);
 - consumo excessivo de recursos por parâmetros adversariais (por exemplo,
   intervalos de datas ou paginação sem limite);
-- exposição indevida do transporte `streamable-http` quando publicado em rede.
+- exposição indevida do transporte `streamable-http` quando publicado em rede
+  (sem `MCP_AUTH_TOKEN` ele não tem autenticação; veja o README) ou falhas na
+  verificação do token bearer.
 
 Não inclua tokens reais nem dados pessoais no relato.

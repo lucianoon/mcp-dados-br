@@ -11,6 +11,8 @@ RUN uv sync --frozen --no-dev --no-editable
 RUN useradd --system --uid 1000 --no-create-home mcp && chown -R mcp:mcp /app
 USER mcp
 
+# Escuta em todas as interfaces do container. Defina MCP_AUTH_TOKEN no
+# `docker run -e` para exigir Authorization: Bearer; sem ele o HTTP fica aberto.
 ENV MCP_TRANSPORTE=streamable-http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORTA=8000
