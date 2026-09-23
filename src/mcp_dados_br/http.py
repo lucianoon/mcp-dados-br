@@ -1,16 +1,19 @@
 import asyncio
+import json
 import logging
 import os
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+from mcp.server.mcpserver.exceptions import ToolError
 
+from mcp_dados_br._versao import __version__
 from mcp_dados_br.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
-_USER_AGENT = "mcp-dados-br/0.1 (+https://github.com/lucianoon/mcp-dados-br)"
+_USER_AGENT = f"mcp-dados-br/{__version__} (+https://github.com/lucianoon/mcp-dados-br)"
 _TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 _RETRYS_DELAY = [0.5, 1.5]
 # Códigos em que vale repetir: limite de taxa e falhas transitórias do upstream
@@ -22,8 +25,12 @@ _client: httpx.AsyncClient | None = None
 _lock = asyncio.Lock()
 
 
-class ApiError(Exception):
-    pass
+class ApiError(ToolError):
+    """Falha ao consultar uma API upstream.
+
+    Herda de `ToolError` para que o SDK MCP entregue a mensagem (já sem o token
+    do INMET) ao cliente, em vez do genérico "Error executing tool".
+    """
 
 
 async def get_client() -> httpx.AsyncClient:
@@ -43,10 +50,14 @@ def reset_cache() -> None:
 
 
 def cache_key(url: str, params: dict[str, Any] | None) -> str:
-    if not params:
-        return url
-    query = "&".join(f"{k}={v}" for k, v in sorted(params.items()) if v is not None)
-    return f"{url}?{query}"
+    """Chave inequívoca para a requisição.
+
+    Serializa URL e parâmetros como JSON ordenado: um valor contendo `&` ou `=`
+    não consegue se passar por outro parâmetro. Os valores viram `str` porque é
+    assim que vão para a query string (`1` e `"1"` geram a mesma requisição).
+    """
+    itens = sorted((k, str(v)) for k, v in (params or {}).items() if v is not None)
+    return json.dumps([url, itens], ensure_ascii=False, separators=(",", ":"))
 
 
 def _query_string(params: dict[str, Any]) -> str:
