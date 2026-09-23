@@ -1,11 +1,44 @@
 from datetime import date, timedelta
-from typing import Any
+from typing import Annotated, Any
+
+from mcp.types import CallToolResult
+from pydantic import BaseModel, Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.saida import resultado
+from mcp_dados_br.validacao import (
+    ANO_MINIMO,
+    validar_ano,
+    validar_id,
+    validar_inteiro,
+    validar_partido,
+    validar_sigla_tipo,
+    validar_texto,
+    validar_uf,
+)
 
 _BASE_URL = "https://dadosabertos.camara.leg.br/api/v2"
 
 _TRUNCAR = 140
+_AGENDA_DIAS_MAX = 14
+_TRAMITACAO_MAX = 100
+_LEGISLATURA_MAX = 99
+
+_Id = Annotated[int, Field(ge=1)]
+
+
+class Deputado(BaseModel):
+    id: int
+    nome: str
+    partido: str
+    uf: str
+    url_foto: str | None = None
+
+
+class ListaDeputados(BaseModel):
+    """Até 20 deputados que atendem aos filtros."""
+
+    deputados: list[Deputado]
 
 
 def _truncar(texto: str | None, limite: int = _TRUNCAR) -> str:
@@ -20,42 +53,59 @@ async def camara_deputados(
     uf: str | None = None,
     partido: str | None = None,
     nome: str | None = None,
-    legislatura: int | None = None,
-) -> str:
+    legislatura: Annotated[int | None, Field(ge=1, le=_LEGISLATURA_MAX)] = None,
+) -> Annotated[CallToolResult, ListaDeputados]:
     """Lista deputados federais da Câmara com filtros opcionais.
+
+    Além do texto, devolve os deputados em structuredContent (id, nome, partido, UF).
 
     Args:
         uf: Sigla da unidade federativa, ex.: "SP", "MG".
         partido: Sigla do partido, ex.: "PT", "PSDB".
-        nome: Nome (total ou parcial) do parlamentar.
+        nome: Nome (total ou parcial) do parlamentar, com pelo menos 3 letras.
         legislatura: Número da legislatura (ex.: 57 para a atual). Padrão: atual.
     """
+    if legislatura is not None:
+        validar_inteiro("legislatura", legislatura, 1, _LEGISLATURA_MAX)
     dados: dict[str, Any] = await get_json(
         f"{_BASE_URL}/deputados",
         params={
-            "siglaUf": uf.upper() if uf else None,
-            "siglaPartido": partido.upper() if partido else None,
-            "nome": nome,
+            "siglaUf": validar_uf(uf) if uf else None,
+            "siglaPartido": validar_partido(partido) if partido else None,
+            "nome": validar_texto("nome", nome, minimo=3, maximo=100) if nome else None,
             "idLegislatura": legislatura,
             "itens": 20,
         },
     )
     deputados = dados.get("dados") or []
+    estruturado = ListaDeputados(
+        deputados=[
+            Deputado(
+                id=d["id"],
+                nome=d["nome"],
+                partido=d.get("siglaPartido") or "",
+                uf=d.get("siglaUf") or "",
+                url_foto=d.get("urlFoto"),
+            )
+            for d in deputados
+        ]
+    )
     if not deputados:
-        return "Nenhum deputado encontrado para os filtros informados."
+        return resultado("Nenhum deputado encontrado para os filtros informados.", estruturado)
     linhas = [
         f"{d['id']} — {d['nome']} ({d['siglaPartido']}/{d['siglaUf']})"
         for d in deputados
     ]
-    return "\n".join(linhas)
+    return resultado("\n".join(linhas), estruturado)
 
 
-async def camara_detalhes_deputado(id_deputado: int) -> str:
+async def camara_detalhes_deputado(id_deputado: _Id) -> str:
     """Detalhes de um deputado federal pelo ID: nome civil, partido, UF e gabinete.
 
     Args:
         id_deputado: ID numérico do deputado (obtido via camara_deputados).
     """
+    id_deputado = validar_id("id_deputado", id_deputado)
     dados: dict[str, Any] = await get_json(f"{_BASE_URL}/deputados/{id_deputado}")
     conteudo = dados.get("dados") or {}
     ultimo = conteudo.get("ultimoStatus") or {}
@@ -78,7 +128,7 @@ async def camara_detalhes_deputado(id_deputado: int) -> str:
 
 
 async def camara_proposicoes(
-    ano: int | None = None,
+    ano: Annotated[int | None, Field(ge=ANO_MINIMO)] = None,
     palavras_chave: str | None = None,
     sigla_tipo: str | None = None,
 ) -> str:
@@ -92,9 +142,11 @@ async def camara_proposicoes(
     dados: dict[str, Any] = await get_json(
         f"{_BASE_URL}/proposicoes",
         params={
-            "ano": ano,
-            "keywords": palavras_chave,
-            "siglaTipo": sigla_tipo.upper() if sigla_tipo else None,
+            "ano": validar_ano("ano", ano) if ano is not None else None,
+            "keywords": (
+                validar_texto("palavras_chave", palavras_chave) if palavras_chave else None
+            ),
+            "siglaTipo": validar_sigla_tipo("sigla_tipo", sigla_tipo) if sigla_tipo else None,
             "itens": 10,
         },
     )
@@ -108,12 +160,13 @@ async def camara_proposicoes(
     return "\n".join(linhas)
 
 
-async def camara_votacoes_proposicao(id_proposicao: int) -> str:
+async def camara_votacoes_proposicao(id_proposicao: _Id) -> str:
     """Lista as votações realizadas para uma proposição específica da Câmara.
 
     Args:
         id_proposicao: ID numérico da proposição (obtido via camara_proposicoes).
     """
+    id_proposicao = validar_id("id_proposicao", id_proposicao)
     dados: dict[str, Any] = await get_json(
         f"{_BASE_URL}/votacoes",
         params={"idProposicao": id_proposicao, "itens": 15},
@@ -129,14 +182,15 @@ async def camara_votacoes_proposicao(id_proposicao: int) -> str:
     return "\n".join(linhas)
 
 
-async def camara_agenda(dias: int = 3) -> str:
+async def camara_agenda(dias: Annotated[int, Field(ge=1, le=_AGENDA_DIAS_MAX)] = 3) -> str:
     """Agenda de eventos da Câmara dos Deputados (sessões, audiências públicas).
 
     Args:
-        dias: Quantidade de dias a partir de hoje (padrão 3, máximo 14).
+        dias: Quantidade de dias a partir de hoje (padrão 3, de 1 a 14).
     """
+    dias = validar_inteiro("dias", dias, 1, _AGENDA_DIAS_MAX)
     hoje = date.today()
-    fim = hoje + timedelta(days=min(max(dias, 1), 14))
+    fim = hoje + timedelta(days=dias)
     dados: dict[str, Any] = await get_json(
         f"{_BASE_URL}/eventos",
         params={
@@ -159,13 +213,18 @@ async def camara_agenda(dias: int = 3) -> str:
     return "\n".join(linhas)
 
 
-async def camara_tramitacao(id_proposicao: int, ultimas: int = 10) -> str:
+async def camara_tramitacao(
+    id_proposicao: _Id,
+    ultimas: Annotated[int, Field(ge=1, le=_TRAMITACAO_MAX)] = 10,
+) -> str:
     """Histórico de tramitação de uma proposição na Câmara.
 
     Args:
         id_proposicao: ID numérico da proposição (obtido via camara_proposicoes).
-        ultimas: Quantidade de movimentações recentes a exibir (padrão 10).
+        ultimas: Quantidade de movimentações recentes a exibir (padrão 10, de 1 a 100).
     """
+    id_proposicao = validar_id("id_proposicao", id_proposicao)
+    ultimas = validar_inteiro("ultimas", ultimas, 1, _TRAMITACAO_MAX)
     dados: dict[str, Any] = await get_json(
         f"{_BASE_URL}/proposicoes/{id_proposicao}/tramitacoes",
         params={"itens": max(ultimas * 2, 20)},

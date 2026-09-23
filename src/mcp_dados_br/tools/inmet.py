@@ -1,8 +1,12 @@
 import os
+import re
 from datetime import date, timedelta
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.validacao import EntradaInvalida, validar_inteiro, validar_padrao, validar_uf
 
 _INMET_URL = "https://apitempo.inmet.gov.br"
 
@@ -16,6 +20,9 @@ _TIPOS = {
 }
 
 _MAX_LINHAS = 40
+_DADOS_DIAS_MAX = 7
+# Automáticas: letra + 3 dígitos (A001). Convencionais: código OMM de 5 dígitos.
+_ESTACAO = re.compile(r"[A-Z]\d{3}|\d{5}")
 
 _CAMPOS_OBSERVADOS = [
     ("TEM_INS", "temp °C"),
@@ -30,7 +37,7 @@ def _normalizar_tipo(tipo: str) -> str:
     codigo = _TIPOS.get(tipo.strip().casefold())
     if codigo is None:
         validos = ", ".join(sorted(set(_TIPOS.values())))
-        raise ValueError(
+        raise EntradaInvalida(
             f"Tipo desconhecido: {tipo!r}. "
             f"Use T (automática) ou M (convencional). Válidos: {validos}"
         )
@@ -45,9 +52,9 @@ async def inmet_estacoes(tipo: str = "T", uf: str | None = None) -> str:
         uf: Sigla opcional da UF para filtrar, ex.: "SP".
     """
     codigo_tipo = _normalizar_tipo(tipo)
+    sigla = validar_uf(uf) if uf else None
     estacoes: list[dict[str, Any]] = await get_json(f"{_INMET_URL}/estacoes/{codigo_tipo}")
-    if uf:
-        sigla = uf.strip().upper()
+    if sigla:
         estacoes = [e for e in estacoes if e.get("SG_ESTADO") == sigla]
     operantes = [e for e in estacoes if e.get("CD_SITUACAO") != "Desativada"]
     rotulo = "automáticas" if codigo_tipo == "T" else "convencionais"
@@ -79,7 +86,10 @@ def _formatar_registro(registro: dict[str, Any]) -> str:
     return f"{momento} UTC — " + (" | ".join(partes) if partes else "sem medições")
 
 
-async def inmet_dados(estacao: str, dias: int = 2) -> str:
+async def inmet_dados(
+    estacao: str,
+    dias: Annotated[int, Field(ge=1, le=_DADOS_DIAS_MAX)] = 2,
+) -> str:
     """Dados horários observados de uma estação automática do INMET (últimos dias).
 
     Requer o ambiente INMET_TOKEN com token fornecido pelo INMET
@@ -87,8 +97,10 @@ async def inmet_dados(estacao: str, dias: int = 2) -> str:
 
     Args:
         estacao: Código da estação, ex.: "A001". Liste códigos com inmet_estacoes.
-        dias: Quantidade de dias retroativos a consultar (padrão 2, máximo 7).
+        dias: Quantidade de dias retroativos a consultar (padrão 2, de 1 a 7).
     """
+    estacao = validar_padrao("estacao", estacao.upper(), _ESTACAO, '"A001" ou "83377"')
+    dias = validar_inteiro("dias", dias, 1, _DADOS_DIAS_MAX)
     token = os.environ.get("INMET_TOKEN")
     if not token:
         return (
@@ -97,17 +109,17 @@ async def inmet_dados(estacao: str, dias: int = 2) -> str:
             "ambiente INMET_TOKEN no servidor MCP."
         )
     fim = date.today()
-    inicio = fim - timedelta(days=min(max(dias, 1), 7))
+    inicio = fim - timedelta(days=dias)
     url = (
         f"{_INMET_URL}/token/estacao/{inicio.isoformat()}/"
-        f"{fim.isoformat()}/{estacao.upper()}/{token}"
+        f"{fim.isoformat()}/{estacao}/{token}"
     )
     registros: list[dict[str, Any]] = await get_json(url)
     if not registros:
-        return f"Nenhum dado retornado para a estação {estacao.upper()} no período."
+        return f"Nenhum dado retornado para a estação {estacao} no período."
     ultimos = registros[-72:]
     cabecalho = (
-        f"Estação {estacao.upper()}: {len(registros)} registros; "
+        f"Estação {estacao}: {len(registros)} registros; "
         f"exibindo os últimos {len(ultimos)}:"
     )
     return "\n".join([cabecalho] + [_formatar_registro(r) for r in ultimos])

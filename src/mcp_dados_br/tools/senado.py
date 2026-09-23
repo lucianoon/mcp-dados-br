@@ -1,8 +1,18 @@
 from collections import Counter
 from datetime import date
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.validacao import (
+    ANO_MINIMO,
+    validar_ano,
+    validar_id,
+    validar_sigla_tipo,
+    validar_texto,
+    validar_uf,
+)
 
 _SENADO_URL = "https://legis.senado.leg.br/dadosabertos"
 
@@ -35,12 +45,12 @@ async def senado_senadores(uf: str | None = None, busca: str | None = None) -> s
         uf: Sigla da unidade federativa para filtrar, ex.: "MG", "RS".
         busca: Nome (total ou parcial) do senador.
     """
+    sigla_uf = validar_uf(uf) if uf else ""
+    termo = validar_texto("busca", busca, maximo=100).casefold() if busca else ""
     dados: dict[str, Any] = await get_json(f"{_SENADO_URL}/senador/lista/atual.json")
     parlamentares = _lista_ou_unica(
         dados.get("ListaParlamentarEmExercicio", {}).get("Parlamentares", {}).get("Parlamentar")
     )
-    termo = busca.strip().casefold() if busca else ""
-    sigla_uf = uf.strip().upper() if uf else ""
     correspondentes: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for parlamentar in parlamentares:
         identificacao = parlamentar.get("IdentificacaoParlamentar") or {}
@@ -68,7 +78,7 @@ async def senado_senadores(uf: str | None = None, busca: str | None = None) -> s
 
 async def senado_materias(
     sigla: str = "PL",
-    ano: int | None = None,
+    ano: Annotated[int | None, Field(ge=ANO_MINIMO)] = None,
     palavras_chave: str | None = None,
 ) -> str:
     """Pesquisa matérias legislativas do Senado (projetos, PECs, requerimentos).
@@ -78,20 +88,23 @@ async def senado_materias(
         ano: Ano de apresentação. Padrão: ano corrente.
         palavras_chave: Palavras-chave filtradas na ementa localmente.
     """
-    ano_referencia = ano if ano else date.today().year
+    sigla = validar_sigla_tipo("sigla", sigla)
+    ano_referencia = validar_ano("ano", ano) if ano is not None else date.today().year
+    termo = (
+        validar_texto("palavras_chave", palavras_chave).casefold() if palavras_chave else ""
+    )
     dados: dict[str, Any] = await get_json(
         f"{_SENADO_URL}/materia/pesquisa/lista.json",
-        params={"sigla": sigla.upper(), "ano": ano_referencia},
+        params={"sigla": sigla, "ano": ano_referencia},
     )
     materias = _lista_ou_unica(
         dados.get("PesquisaBasicaMateria", {}).get("Materias", {}).get("Materia")
     )
-    termo = palavras_chave.strip().casefold() if palavras_chave else ""
     if termo:
         materias = [m for m in materias if termo in str(m.get("Ementa", "")).casefold()]
     if not materias:
         return "Nenhuma matéria encontrada para os filtros informados."
-    linhas = [f"{len(materias)} matérias {sigla.upper()} de {ano_referencia}:"]
+    linhas = [f"{len(materias)} matérias {sigla} de {ano_referencia}:"]
     for m in materias[:20]:
         linhas.append(
             f"{m.get('Codigo')} — {m.get('Sigla')} "
@@ -119,12 +132,13 @@ def _placar_votos(votos: dict[str, Any]) -> str:
     return " | ".join(partes) if partes else "sem votos registrados"
 
 
-async def senado_votacoes(codigo_materia: int) -> str:
+async def senado_votacoes(codigo_materia: Annotated[int, Field(ge=1)]) -> str:
     """Lista as votações realizadas no plenário do Senado para uma matéria.
 
     Args:
         codigo_materia: Código numérico da matéria (obtido via senado_materias).
     """
+    codigo_materia = validar_id("codigo_materia", codigo_materia)
     dados: dict[str, Any] = await get_json(
         f"{_SENADO_URL}/materia/votacoes/{codigo_materia}.json"
     )

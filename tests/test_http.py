@@ -2,6 +2,7 @@ import httpx
 import pytest
 import respx
 
+from mcp_dados_br import __version__
 from mcp_dados_br.http import ApiError, cache_key, get_json
 
 
@@ -142,11 +143,48 @@ async def test_get_json_nao_repete_em_4xx() -> None:
     assert route.call_count == 1
 
 
-def test_cache_key_com_params_ordenados() -> None:
-    chave = cache_key("https://x.test/api", {"b": "2", "a": "1"})
-    assert chave == "https://x.test/api?a=1&b=2"
+def test_cache_key_independe_da_ordem_dos_params() -> None:
+    assert cache_key("https://x.test/api", {"b": "2", "a": "1"}) == cache_key(
+        "https://x.test/api", {"a": "1", "b": "2"}
+    )
 
 
 def test_cache_key_ignora_parametros_none() -> None:
-    chave = cache_key("https://x.test/api", {"a": "1", "vazio": None})
-    assert chave == "https://x.test/api?a=1"
+    assert cache_key("https://x.test/api", {"a": "1", "vazio": None}) == cache_key(
+        "https://x.test/api", {"a": "1"}
+    )
+
+
+def test_cache_key_trata_int_e_str_iguais() -> None:
+    # Os dois viram a mesma query string, então devem compartilhar o cache.
+    assert cache_key("https://x.test/api", {"n": 1}) == cache_key("https://x.test/api", {"n": "1"})
+
+
+def test_cache_key_nao_confunde_valor_com_separadores() -> None:
+    # Na chave antiga ("url?a=1&b=2") os dois casos colidiam.
+    um_param = cache_key("https://x.test/api", {"a": "1&b=2"})
+    dois_params = cache_key("https://x.test/api", {"a": "1", "b": "2"})
+    assert um_param != dois_params
+    assert cache_key("https://x.test/api?a=1", None) != cache_key("https://x.test/api", {"a": "1"})
+
+
+@respx.mock
+async def test_valores_com_separadores_nao_reaproveitam_cache() -> None:
+    route = respx.get("https://api.exemplo.test/busca").mock(
+        side_effect=[httpx.Response(200, json={"n": 1}), httpx.Response(200, json={"n": 2})]
+    )
+    primeiro = await get_json("https://api.exemplo.test/busca", {"q": "a&x=1"})
+    segundo = await get_json("https://api.exemplo.test/busca", {"q": "a", "x": "1"})
+    assert (primeiro, segundo) == ({"n": 1}, {"n": 2})
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_user_agent_usa_versao_instalada() -> None:
+    route = respx.get("https://api.exemplo.test/ua").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    await get_json("https://api.exemplo.test/ua")
+    agente = route.calls.last.request.headers["User-Agent"]
+    assert agente.startswith(f"mcp-dados-br/{__version__} ")
+    assert __version__ != "0.1.0"

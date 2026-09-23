@@ -1,6 +1,7 @@
 import httpx
 import respx
 
+from mcp_dados_br.saida import texto_de
 from mcp_dados_br.tools import camara
 
 BASE = "https://dadosabertos.camara.leg.br/api/v2"
@@ -23,7 +24,7 @@ async def test_camara_deputados_formata_saida() -> None:
             },
         )
     )
-    saida = await camara.camara_deputados(uf="sp")
+    saida = texto_de(await camara.camara_deputados(uf="sp"))
     requisicao_url = str(respx.calls.last.request.url)
     assert "siglaUf=SP" in requisicao_url
     assert saida == "221328 — Adilson Barroso (PL/SP)"
@@ -32,7 +33,7 @@ async def test_camara_deputados_formata_saida() -> None:
 @respx.mock
 async def test_camara_deputados_sem_resultado() -> None:
     respx.get(f"{BASE}/deputados").mock(return_value=httpx.Response(200, json={"dados": []}))
-    saida = await camara.camara_deputados(nome="inexistente")
+    saida = texto_de(await camara.camara_deputados(nome="inexistente"))
     assert saida == "Nenhum deputado encontrado para os filtros informados."
 
 

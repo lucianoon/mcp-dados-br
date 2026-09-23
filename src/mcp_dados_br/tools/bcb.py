@@ -1,7 +1,18 @@
-from datetime import date, timedelta
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Annotated, Any
+
+from mcp.types import CallToolResult
+from pydantic import BaseModel, Field
 
 from mcp_dados_br.http import get_json
+from mcp_dados_br.saida import resultado
+from mcp_dados_br.validacao import (
+    EntradaInvalida,
+    validar_data,
+    validar_id,
+    validar_inteiro,
+    validar_moeda,
+)
 
 _SGS_URL = "https://api.bcb.gov.br/dados/serie"
 _OLINDA_URL = "https://olinda.bcb.gov.br/olinda/servico"
@@ -25,6 +36,54 @@ _INDICADORES_SGS = {
     "salario_minimo": 36,
 }
 
+_CAMBIO_DIAS_MAX = 30
+# Cada dia útil tem até 5 boletins PTAX (abertura, 3 intermediários e
+# fechamento); o $top precisa cobrir todos os da janela, senão o OData corta
+# os dias mais recentes.
+_PTAX_BOLETINS_POR_DIA = 5
+_SGS_MAX_EXIBIDOS = 60
+
+
+class RegistroSGS(BaseModel):
+    data: date
+    valor: float | None = Field(description="Valor publicado; null se vier vazio do SGS.")
+
+
+class SerieSGS(BaseModel):
+    """Série do SGS. `registros` traz os últimos 60 do período."""
+
+    codigo: int
+    data_inicial: date
+    data_final: date
+    total_registros: int
+    registros: list[RegistroSGS]
+
+
+class CotacaoPTAX(BaseModel):
+    data: date
+    compra: float
+    venda: float
+
+
+class CambioPTAX(BaseModel):
+    """Cotações PTAX de fechamento (ou do último boletim do dia, na falta dele)."""
+
+    moeda: str
+    cotacoes: list[CotacaoPTAX]
+    ultima: CotacaoPTAX | None
+    compra_min: float | None
+    compra_max: float | None
+    compra_media: float | None
+    venda_min: float | None
+    venda_max: float | None
+
+
+def _valor_sgs(valor: Any) -> float | None:
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        return None
+
 
 def _data_sgs(iso: str) -> str:
     ano, mes, dia = iso.split("-")
@@ -40,8 +99,8 @@ async def bcb_serie(
     indicador: str | None = None,
     data_inicial: str | None = None,
     data_final: str | None = None,
-    codigo: int | None = None,
-) -> str:
+    codigo: Annotated[int | None, Field(ge=1)] = None,
+) -> Annotated[CallToolResult, SerieSGS]:
     """Consulta séries temporais do Sistema Gerenciador de Séries (SGS) do Banco Central.
 
     Args:
@@ -51,69 +110,108 @@ async def bcb_serie(
         data_final: Data final ISO "AAAA-MM-DD". Padrão: hoje.
         codigo: Código bruto da série SGS para séries sem atalho
             (catálogo: https://www3.bcb.gov.br/sgspub/). Ignorado se indicador for informado.
+
+    Além do texto, devolve os registros em structuredContent (data ISO e valor numérico).
     """
     if indicador:
         chave = indicador.strip().casefold()
         codigo_resolvido = _INDICADORES_SGS.get(chave)
         if codigo_resolvido is None:
             validos = ", ".join(sorted(_INDICADORES_SGS))
-            raise ValueError(
+            raise EntradaInvalida(
                 f"Indicador desconhecido: {indicador!r}. Válidos: {validos}"
             )
         codigo = codigo_resolvido
     elif codigo is None:
         atalhos = ", ".join(sorted(_INDICADORES_SGS))
-        raise ValueError(
+        raise EntradaInvalida(
             "Informe o parâmetro indicador (atalhos: "
             f"{atalhos}) ou o código bruto da série SGS."
         )
-    fim = date.fromisoformat(data_final) if data_final else date.today()
-    inicio = date.fromisoformat(data_inicial) if data_inicial else fim - timedelta(days=90)
+    else:
+        codigo = validar_id("codigo", codigo)
+    fim = validar_data("data_final", data_final) if data_final else date.today()
+    inicio = (
+        validar_data("data_inicial", data_inicial)
+        if data_inicial
+        else fim - timedelta(days=90)
+    )
     if inicio > fim:
-        raise ValueError("data_inicial deve ser anterior ou igual a data_final.")
+        raise EntradaInvalida("data_inicial deve ser anterior ou igual a data_final.")
     url = f"{_SGS_URL}/bcdata.sgs.{codigo}/dados"
     dados: list[dict[str, Any]] = await get_json(url, params={
         "formato": "json",
         "dataInicial": _data_sgs(inicio.isoformat()),
         "dataFinal": _data_sgs(fim.isoformat()),
     })
+    exibidos = dados[-_SGS_MAX_EXIBIDOS:]
+    estruturado = SerieSGS(
+        codigo=codigo,
+        data_inicial=inicio,
+        data_final=fim,
+        total_registros=len(dados),
+        registros=[
+            RegistroSGS(
+                data=datetime.strptime(item["data"], "%d/%m/%Y").date(),
+                valor=_valor_sgs(item.get("valor")),
+            )
+            for item in exibidos
+        ],
+    )
     if not dados:
-        return f"Nenhum dado retornado para a série {codigo} no período informado."
-    linhas = [f"{item['data']}: {item['valor']}" for item in dados[-60:]]
-    if len(dados) > 60:
-        linhas.insert(0, f"Série {codigo}: {len(dados)} registros; exibindo os últimos 60.")
+        texto = f"Nenhum dado retornado para a série {codigo} no período informado."
+        return resultado(texto, estruturado)
+    linhas = [f"{item['data']}: {item['valor']}" for item in exibidos]
+    if len(dados) > _SGS_MAX_EXIBIDOS:
+        linhas.insert(
+            0, f"Série {codigo}: {len(dados)} registros; exibindo os últimos {_SGS_MAX_EXIBIDOS}."
+        )
     else:
         linhas.insert(0, f"Série {codigo}:")
-    return "\n".join(linhas)
+    return resultado("\n".join(linhas), estruturado)
 
 
-async def bcb_cambio(moeda: str = "USD", dias: int = 7) -> str:
+async def bcb_cambio(
+    moeda: str = "USD",
+    dias: Annotated[int, Field(ge=1, le=_CAMBIO_DIAS_MAX)] = 7,
+) -> Annotated[CallToolResult, CambioPTAX]:
     """Cotações de câmbio PTAX do Banco Central para uma moeda nos últimos N dias.
 
     Args:
-        moeda: Símbolo da moeda (ex.: "USD", "EUR", "GBP"). Use a tool bcb_moedas
-            para listar as moedas disponíveis.
-        dias: Quantidade de dias úteis de cotação a retornar (padrão 7).
+        moeda: Código ISO 4217 de 3 letras (ex.: "USD", "EUR", "GBP"). Use a tool
+            bcb_moedas para listar as moedas disponíveis.
+        dias: Quantidade de dias úteis de cotação a retornar (padrão 7, de 1 a 30).
+
+    Além do texto, devolve cotações e resumo numérico em structuredContent.
     """
+    moeda = validar_moeda(moeda)
+    dias = validar_inteiro("dias", dias, 1, _CAMBIO_DIAS_MAX)
     fim = date.today()
-    inicio = fim - timedelta(days=max(dias, 2) + 5)
+    # Janela em dias corridos com folga para fins de semana e feriados.
+    janela = dias * 2 + 5
+    inicio = fim - timedelta(days=janela)
     url = (
         f"{_PTAX_URL}/CotacaoMoedaPeriodo(moeda=@moeda,"
         f"dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
     )
     dados: dict[str, Any] = await get_json(url, params={
-        "@moeda": f"'{moeda.upper()}'",
+        "@moeda": f"'{moeda}'",
         "@dataInicial": f"'{_data_ptax(inicio.isoformat())}'",
         "@dataFinalCotacao": f"'{_data_ptax(fim.isoformat())}'",
         "$format": "json",
-        "$top": max(dias * 2, 20),
+        "$top": janela * _PTAX_BOLETINS_POR_DIA,
     })
     cotacoes = dados.get("value") or []
     if not cotacoes:
-        return (
-            f"Nenhuma cotação encontrada para {moeda.upper()}. "
+        vazio = CambioPTAX(
+            moeda=moeda, cotacoes=[], ultima=None, compra_min=None, compra_max=None,
+            compra_media=None, venda_min=None, venda_max=None,
+        )
+        texto = (
+            f"Nenhuma cotação encontrada para {moeda}. "
             "Verifique o símbolo com a tool bcb_moedas."
         )
+        return resultado(texto, vazio)
     fechamentos = [c for c in cotacoes if c.get("tipoBoletim") == "Fechamento"]
     base = fechamentos if fechamentos else cotacoes
     ultimas = base[-dias:] if dias < len(base) else base
@@ -121,7 +219,7 @@ async def bcb_cambio(moeda: str = "USD", dias: int = 7) -> str:
     vendas = [float(c["cotacaoVenda"]) for c in ultimas]
     ultima = ultimas[-1]
     resumo = [
-        f"PTAX {moeda.upper()} — última cotação ({ultima['dataHoraCotacao'][:10]}): "
+        f"PTAX {moeda} — última cotação ({ultima['dataHoraCotacao'][:10]}): "
         f"compra R$ {ultima['cotacaoCompra']}, venda R$ {ultima['cotacaoVenda']}",
         f"Período ({len(ultimas)} cotações): compra mín. R$ {min(compras)}, "
         f"máx. R$ {max(compras)}, média R$ {sum(compras) / len(compras):.4f}; "
@@ -134,7 +232,25 @@ async def bcb_cambio(moeda: str = "USD", dias: int = 7) -> str:
         )
         for c in ultimas
     ]
-    return "\n".join(resumo + [""] + historico)
+    estruturadas = [
+        CotacaoPTAX(
+            data=date.fromisoformat(c["dataHoraCotacao"][:10]),
+            compra=float(c["cotacaoCompra"]),
+            venda=float(c["cotacaoVenda"]),
+        )
+        for c in ultimas
+    ]
+    estruturado = CambioPTAX(
+        moeda=moeda,
+        cotacoes=estruturadas,
+        ultima=estruturadas[-1],
+        compra_min=min(compras),
+        compra_max=max(compras),
+        compra_media=round(sum(compras) / len(compras), 4),
+        venda_min=min(vendas),
+        venda_max=max(vendas),
+    )
+    return resultado("\n".join(resumo + [""] + historico), estruturado)
 
 
 async def bcb_moedas() -> str:
@@ -194,7 +310,7 @@ async def bcb_focus(indicador: str = "selic") -> str:
     entidade_info = _FOCUS_ENTIDADES.get(chave)
     if entidade_info is None:
         validos = ", ".join(sorted(_FOCUS_ENTIDADES))
-        raise ValueError(f"Indicador desconhecido: {indicador!r}. Válidos: {validos}")
+        raise EntradaInvalida(f"Indicador desconhecido: {indicador!r}. Válidos: {validos}")
     entidade, filtro_indicador = entidade_info
     desde = (date.today() - timedelta(days=7)).isoformat()
     filtro = f"Data ge '{desde}'"

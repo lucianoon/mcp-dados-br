@@ -114,12 +114,52 @@ on a local network. By default the server listens on `127.0.0.1` only; set
 `MCP_HOST=0.0.0.0` to accept connections from other machines (the Docker image
 already does).
 
+| Variable | Default | Purpose |
+|---|---|---|
+| `MCP_TRANSPORTE` | `stdio` | `streamable-http` enables HTTP mode |
+| `MCP_HOST` | `127.0.0.1` | Listen interface (`0.0.0.0` in the Docker image) |
+| `MCP_PORTA` | `8000` | HTTP port |
+| `MCP_AUTH_TOKEN` | empty | When set, every request must send `Authorization: Bearer <token>` |
+
+### Authentication (optional bearer token)
+
+> **Risk:** without `MCP_AUTH_TOKEN`, HTTP mode has no authentication. Listening
+> on `0.0.0.0` (as the Docker image does), anyone who can reach the port can call
+> all 19 tools, burn your quota on the public APIs and use your `INMET_TOKEN`.
+> The server logs a warning when it starts like that. Do not expose the port to
+> the internet without a token, and put a TLS reverse proxy in front of it: over
+> plain HTTP the token travels in clear text.
+
+Generate a long random token and hand it to the server:
+
+```bash
+export MCP_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+MCP_TRANSPORTE=streamable-http mcp-dados-br
+```
+
+Requests without the header, with another scheme or with a different token get
+`401` with `WWW-Authenticate: Bearer`. The comparison uses `secrets.compare_digest`
+(constant time). On the client, send the header, for example in Claude Code:
+
+```bash
+claude mcp add --transport http dados-brasil http://localhost:8000/mcp \
+  --header "Authorization: Bearer $MCP_AUTH_TOKEN"
+```
+
+The token does not apply to stdio: the process only talks to the client that started it.
+
 ### Docker
 
 ```bash
 docker build -t mcp-dados-br .
-docker run -p 8000:8000 -e INMET_TOKEN=your-token mcp-dados-br
+docker run -p 8000:8000 \
+  -e MCP_AUTH_TOKEN="$MCP_AUTH_TOKEN" \
+  -e INMET_TOKEN=your-token \
+  mcp-dados-br
 ```
+
+For local-only use, publish the port on loopback only:
+`docker run -p 127.0.0.1:8000:8000 mcp-dados-br`.
 
 ## Usage examples
 
@@ -153,7 +193,10 @@ To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```
 src/mcp_dados_br/
-├── server.py        # MCP server and tool registration
+├── server.py        # MCP server, tool registration and transport selection
+├── auth.py          # ASGI bearer authentication middleware (HTTP mode)
+├── validacao.py     # Tool argument validation (state codes, currency, dates, limits)
+├── saida.py         # Tool result with text + structuredContent
 ├── http.py          # Shared HTTP client, retries and error handling
 ├── cache.py         # In-memory TTL cache for API responses
 └── tools/
@@ -164,10 +207,20 @@ src/mcp_dados_br/
     └── senado.py    # Federal Senate open data (LegisSaber)
 ```
 
-- stdio transport (the MCP desktop default)
-- 10-minute TTL cache per identical request
-- Automatic retries on network failures
-- Output formatted as model-readable text
+- Two transports: stdio (the desktop client default) and streamable HTTP
+  (Docker/network), the latter with optional bearer auth via `MCP_AUTH_TOKEN`
+- Input validation before any URL is built: state codes among the 27 UFs, 3-letter
+  ISO 4217 currency codes, ISO dates, numeric IBGE/SIDRA codes, positive IDs and
+  bounds on `dias`/`ultimas`. Bounds are also published in each tool's
+  `inputSchema`, and the MCP client gets an error message saying what was
+  received and what is accepted
+- 10-minute TTL cache per identical request, with an unambiguous key (sorted JSON
+  of URL and parameters)
+- Automatic retries on network failures and on `429`/`502`/`503`/`504`
+- Output formatted as model-readable text; `bcb_serie`, `bcb_cambio` and
+  `camara_deputados` also return `structuredContent` with an `outputSchema`
+  (ISO dates, numeric values), keeping the text as a fallback
+- User-Agent carries the installed package version
 
 ## Roadmap
 
@@ -175,6 +228,7 @@ src/mcp_dados_br/
 - [x] v0.3 — Chamber agenda, streamable HTTP transport and scheduled integration tests in CI
 - [x] v0.4 — Legislative progress, named SGS shortcuts, Docker image
 - [x] v0.5 — Published on PyPI (`uvx mcp-dados-br`), MCP Registry and Smithery
+- [ ] v0.6 — Input validation, bearer auth for HTTP mode and structured output
 - [ ] DOU: search the Federal Official Gazette (waiting for a stable public API)
 - [ ] TSE: election results
 

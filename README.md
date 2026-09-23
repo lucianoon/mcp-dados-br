@@ -116,12 +116,52 @@ compartilhar o servidor na rede local. Por padrão o servidor escuta só em
 `127.0.0.1`; defina `MCP_HOST=0.0.0.0` para aceitar conexões de outras máquinas
 (a imagem Docker já faz isso).
 
+| Variável | Padrão | Função |
+|---|---|---|
+| `MCP_TRANSPORTE` | `stdio` | `streamable-http` liga o modo HTTP |
+| `MCP_HOST` | `127.0.0.1` | Interface de escuta (`0.0.0.0` na imagem Docker) |
+| `MCP_PORTA` | `8000` | Porta HTTP |
+| `MCP_AUTH_TOKEN` | vazio | Se definido, exige `Authorization: Bearer <token>` em toda requisição |
+
+### Autenticação (bearer opcional)
+
+> **Risco:** sem `MCP_AUTH_TOKEN`, o modo HTTP não tem autenticação. Escutando
+> em `0.0.0.0` (como na imagem Docker), qualquer pessoa que alcance a porta pode
+> chamar as 19 tools, consumir a sua cota nas APIs públicas e usar o seu
+> `INMET_TOKEN`. O servidor registra um aviso no log quando sobe assim. Não
+> publique a porta na internet sem token e prefira um proxy reverso com TLS na
+> frente: sobre HTTP puro o token trafega em texto claro.
+
+Gere um token longo e aleatório e passe-o ao servidor:
+
+```bash
+export MCP_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+MCP_TRANSPORTE=streamable-http mcp-dados-br
+```
+
+Requisições sem o cabeçalho, com outro esquema ou com token diferente recebem
+`401` com `WWW-Authenticate: Bearer`. A comparação usa `secrets.compare_digest`
+(tempo constante). No cliente, envie o cabeçalho, por exemplo no Claude Code:
+
+```bash
+claude mcp add --transport http dados-brasil http://localhost:8000/mcp \
+  --header "Authorization: Bearer $MCP_AUTH_TOKEN"
+```
+
+Em stdio o token não se aplica: o processo só fala com o cliente que o iniciou.
+
 ### Docker
 
 ```bash
 docker build -t mcp-dados-br .
-docker run -p 8000:8000 -e INMET_TOKEN=seu-token mcp-dados-br
+docker run -p 8000:8000 \
+  -e MCP_AUTH_TOKEN="$MCP_AUTH_TOKEN" \
+  -e INMET_TOKEN=seu-token \
+  mcp-dados-br
 ```
+
+Para uso só na própria máquina, publique a porta apenas no loopback:
+`docker run -p 127.0.0.1:8000:8000 mcp-dados-br`.
 
 ## Exemplos de uso
 
@@ -155,7 +195,10 @@ Para contribuir, leia o [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```
 src/mcp_dados_br/
-├── server.py        # Servidor MCP e registro das tools
+├── server.py        # Servidor MCP, registro das tools e escolha do transporte
+├── auth.py          # Middleware ASGI de autenticação bearer (modo HTTP)
+├── validacao.py     # Validação dos argumentos das tools (UF, moeda, datas, limites)
+├── saida.py         # Resultado com texto + structuredContent
 ├── http.py          # Cliente HTTP compartilhado, retry e tratamento de erros
 ├── cache.py         # Cache TTL em memória para as respostas das APIs
 └── tools/
@@ -166,10 +209,20 @@ src/mcp_dados_br/
     └── senado.py    # Dados Abertos do Senado (LegisSaber)
 ```
 
-- Transporte stdio (padrão MCP desktop)
-- Cache TTL de 10 minutos por requisição idêntica
-- Retry automático em falhas de rede
-- Saídas formatadas como texto legível pelo modelo
+- Dois transportes: stdio (padrão dos clientes desktop) e streamable-http
+  (Docker/rede), este com autenticação bearer opcional via `MCP_AUTH_TOKEN`
+- Validação de entrada antes de montar qualquer URL: UF entre as 27 siglas,
+  moeda ISO 4217 de 3 letras, datas ISO, códigos IBGE/SIDRA numéricos, IDs
+  positivos e limites de `dias`/`ultimas`. Os limites também aparecem no
+  `inputSchema` das tools, e o erro chega ao cliente MCP dizendo o que foi
+  recebido e o que é aceito
+- Cache TTL de 10 minutos por requisição idêntica, com chave inequívoca (JSON
+  ordenado de URL e parâmetros)
+- Retry automático em falhas de rede e em `429`/`502`/`503`/`504`
+- Saídas formatadas como texto legível pelo modelo; `bcb_serie`, `bcb_cambio` e
+  `camara_deputados` também devolvem `structuredContent` com `outputSchema`
+  (datas ISO, valores numéricos), mantendo o texto como fallback
+- User-Agent com a versão instalada do pacote
 
 ## Roadmap
 
@@ -177,6 +230,7 @@ src/mcp_dados_br/
 - [x] v0.3 — Agenda da Câmara, transporte streamable-http e testes de integração agendados no CI
 - [x] v0.4 — Tramitações, atalhos nomeados no SGS, imagem Docker
 - [x] v0.5 — Publicação no PyPI (`uvx mcp-dados-br`), MCP Registry e Smithery
+- [ ] v0.6 — Validação de entrada, autenticação bearer no modo HTTP e saída estruturada
 - [ ] DOU: busca no Diário Oficial da União (aguardando API pública estável)
 - [ ] TSE: resultados eleitorais
 

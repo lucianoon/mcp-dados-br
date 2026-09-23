@@ -2,10 +2,16 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from mcp.server import MCPServer
 
+from mcp_dados_br.auth import ExigirBearer
 from mcp_dados_br.tools import bcb, camara, ibge, inmet, senado
+
+logger = logging.getLogger(__name__)
+
+_HOSTS_LOCAIS = {"127.0.0.1", "localhost", "::1"}
 
 _INSTRUCTIONS = """\
 Servidor de dados públicos brasileiros. Use as ferramentas para responder
@@ -13,14 +19,15 @@ perguntas sobre estatísticas do IBGE (população, PIB), indicadores econômico
 do Banco Central (Selic, IPCA, câmbio PTAX, expectativas do boletim Focus),
 estações meteorológicas do INMET, atividade legislativa da Câmara dos
 Deputados e do Senado Federal (senadores, matérias e votações). Todas as
-respostas são texto em português brasileiro pronto para uso. Prefira sempre
-as ferramentas específicas antes da genérica ibge_sidra.
+respostas são texto em português brasileiro pronto para uso; bcb_serie,
+bcb_cambio e camara_deputados também devolvem os dados em structuredContent.
+Prefira sempre as ferramentas específicas antes da genérica ibge_sidra.
 """
 
 
 def create_server() -> MCPServer:
     mcp = MCPServer("mcp-dados-br", instructions=_INSTRUCTIONS)
-    tools: list[Callable[..., Awaitable[str]]] = [
+    tools: list[Callable[..., Awaitable[Any]]] = [
         ibge.ibge_populacao,
         ibge.ibge_pib,
         ibge.ibge_municipios,
@@ -55,16 +62,35 @@ def _configurar_logging() -> None:
     )
 
 
+def _servir_http(servidor: MCPServer) -> None:
+    # Padrão do SDK é 127.0.0.1, correto para uso local. Em container é
+    # preciso escutar em 0.0.0.0 para a porta publicada responder.
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    porta = int(os.environ.get("MCP_PORTA", "8000"))
+    token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+    if not token:
+        if host not in _HOSTS_LOCAIS:
+            logger.warning(
+                "Transporte streamable-http escutando em %s sem MCP_AUTH_TOKEN: "
+                "qualquer um que alcance a porta %d pode chamar as tools.",
+                host,
+                porta,
+            )
+        servidor.run(transport="streamable-http", host=host, port=porta)
+        return
+
+    import uvicorn
+
+    app = ExigirBearer(servidor.streamable_http_app(host=host), token)
+    uvicorn.run(app, host=host, port=porta, log_level=servidor.settings.log_level.lower())
+
+
 def main() -> None:
     _configurar_logging()
     servidor = create_server()
     transporte = os.environ.get("MCP_TRANSPORTE", "stdio")
     if transporte == "streamable-http":
-        # Padrão do SDK é 127.0.0.1, correto para uso local. Em container é
-        # preciso escutar em 0.0.0.0 para a porta publicada responder.
-        host = os.environ.get("MCP_HOST", "127.0.0.1")
-        porta = int(os.environ.get("MCP_PORTA", "8000"))
-        servidor.run(transport="streamable-http", host=host, port=porta)
+        _servir_http(servidor)
     else:
         servidor.run()
 
