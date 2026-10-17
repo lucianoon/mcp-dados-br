@@ -1,0 +1,44 @@
+name: Integração
+
+# Workflow separado do CI principal: falha transitória de API pública
+# (Câmara 504, Focus atrasado, fila de runners) não vermelha o badge de CI.
+# Quebras reais continuam visíveis neste workflow e no badge de Integração.
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integracao:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Sync dependencies
+        run: uv sync --dev --locked
+
+      - name: Testes de integração (APIs reais)
+        run: |
+          tentativas=3
+          espera=20
+          i=1
+          while [ "$i" -le "$tentativas" ]; do
+            echo "Tentativa $i/$tentativas"
+            if uv run pytest -m integration -q; then
+              exit 0
+            fi
+            if [ "$i" -eq "$tentativas" ]; then
+              echo "Suíte de integração falhou nas $tentativas tentativas"
+              exit 1
+            fi
+            echo "Falhou; nova tentativa em ${espera}s"
+            sleep "$espera"
+            i=$((i + 1))
+          done

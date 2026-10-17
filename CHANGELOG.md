@@ -7,6 +7,10 @@ e versionamento semântico.
 
 ### Adicionado
 
+- Workflow `integracao.yml` (cron semanal + `workflow_dispatch`) isolado do CI
+  principal, com até 3 tentativas da suíte. Falha transitória de API pública
+  não vermelha o badge de CI; o badge de Integração continua refletindo a suíte
+  contra as APIs reais
 - `server.json` declara também o transporte `streamable-http` (pacote PyPI com
   `MCP_TRANSPORTE`, `MCP_PORTA`, `MCP_HOST` e `MCP_AUTH_TOKEN`, URL
   `http://127.0.0.1:{MCP_PORTA}/mcp`), além do stdio; o publish sincroniza a
@@ -19,6 +23,10 @@ e versionamento semântico.
 
 ### Corrigido
 
+- `bcb_focus`: janela de consulta do Boletim Focus de 7 para 30 dias e filtro
+  OData `baseCalculo eq 0` na Selic. A janela curta (e o `$top` preenchido só
+  com `baseCalculo` 1) devolvia "nenhuma expectativa recente" mesmo com boletim
+  publicado — falha da integração em 07/09 e 12/10/2026
 - Leitura defensiva dos payloads em todas as tools (`payload.py`): campo
   ausente, tipo trocado ou resposta truncada numa API upstream deixam de virar
   `KeyError`/`TypeError`/`IndexError` genéricos ("Error executing tool") e
@@ -29,6 +37,11 @@ e versionamento semântico.
 - Altitude fora do formato em `inmet_estacoes` é omitida em vez de derrubar a
   lista
 - README (PT e EN): roadmap marca a v0.6 como entregue
+
+### Alterado
+
+- O cron semanal e o job contra APIs reais saíram de `ci.yml`; o badge de CI
+  passa a refletir só lint, typecheck, testes unitários e o smoke Docker
 
 ### Planejado
 

@@ -9,7 +9,7 @@ from mcp_dados_br.tools import bcb
 FOCUS_URL = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata"
 
 HOJE = date.today()
-INICIO = (HOJE - timedelta(days=7)).isoformat()
+INICIO = (HOJE - timedelta(days=bcb._FOCUS_JANELA_DIAS)).isoformat()
 
 RESPOSTA_SELIC = {
     "value": [
@@ -51,7 +51,7 @@ async def test_bcb_focus_selic_saida() -> None:
     )
     saida = await bcb.bcb_focus("Selic")
     requisicao = route.calls.last.request.url.params
-    assert requisicao["$filter"] == f"Data ge '{INICIO}'"
+    assert requisicao["$filter"] == f"Data ge '{INICIO}' and baseCalculo eq 0"
     assert requisicao["$orderby"] == "Data desc"
     assert "expectativas para SELIC:" in saida
     assert "mediana 11.25" in saida
@@ -91,4 +91,14 @@ async def test_bcb_focus_sem_dados_recentes() -> None:
         return_value=httpx.Response(200, json={"value": []})
     )
     saida = await bcb.bcb_focus("pib")
+    assert "Nenhuma expectativa recente" in saida
+    assert f"últimos {bcb._FOCUS_JANELA_DIAS} dias" in saida
+
+
+@respx.mock
+async def test_bcb_focus_selic_descarta_so_base_calculo_1() -> None:
+    respx.get(f"{FOCUS_URL}/ExpectativasMercadoSelic").mock(
+        return_value=httpx.Response(200, json={"value": [RESPOSTA_SELIC["value"][1]]})
+    )
+    saida = await bcb.bcb_focus("selic")
     assert "Nenhuma expectativa recente" in saida
