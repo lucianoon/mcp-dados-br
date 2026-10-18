@@ -20,8 +20,16 @@ _OLINDA_URL = "https://olinda.bcb.gov.br/olinda/servico"
 _PTAX_URL = f"{_OLINDA_URL}/PTAX/versao/v1/odata"
 _FOCUS_URL = f"{_OLINDA_URL}/Expectativas/versao/v1/odata"
 
+# O boletim Focus não sai todo dia (fins de semana, feriados, atraso na
+# publicação). A janela de 7 dias vazia derrubou a integração em 07/09 e
+# 12/10/2026: a última Data disponível era mais antiga que uma semana.
+_FOCUS_JANELA_DIAS = 30
+
 _FOCUS_ENTIDADES = {
-    "selic": ("ExpectativasMercadoSelic", None),
+    # baseCalculo 0 = amostra completa; 1 = recorte. Sem esse filtro no OData,
+    # o $top pode vir só com baseCalculo 1 (ordenação instável no mesmo Data)
+    # e o recorte em Python esvazia a resposta mesmo com boletim publicado.
+    "selic": ("ExpectativasMercadoSelic", "baseCalculo eq 0"),
     "ipca": ("ExpectativasMercadoTop5Inflacao12Meses", "Indicador eq 'IPCA'"),
     "pib": ("ExpectativasMercadoTop5Anuais", "Indicador eq 'PIB Total'"),
     "cambio": ("ExpectativasMercadoTop5Anuais", "Indicador eq 'Câmbio'"),
@@ -322,7 +330,7 @@ async def bcb_focus(indicador: str = "selic") -> str:
         validos = ", ".join(sorted(_FOCUS_ENTIDADES))
         raise EntradaInvalida(f"Indicador desconhecido: {indicador!r}. Válidos: {validos}")
     entidade, filtro_indicador = entidade_info
-    desde = (date.today() - timedelta(days=7)).isoformat()
+    desde = (date.today() - timedelta(days=_FOCUS_JANELA_DIAS)).isoformat()
     filtro = f"Data ge '{desde}'"
     if filtro_indicador:
         filtro += f" and {filtro_indicador}"
@@ -345,7 +353,7 @@ async def bcb_focus(indicador: str = "selic") -> str:
     if not registros:
         return (
             f"Nenhuma expectativa recente encontrada para {chave}. "
-            "O boletim Focus pode não ter sido publicado nos últimos 7 dias."
+            f"O boletim Focus pode não ter sido publicado nos últimos {_FOCUS_JANELA_DIAS} dias."
         )
     for r in registros:
         campo(r, "Data", fonte)

@@ -1,6 +1,7 @@
 # mcp-dados-br
 
 [![CI](https://github.com/lucianoon/mcp-dados-br/actions/workflows/ci.yml/badge.svg)](https://github.com/lucianoon/mcp-dados-br/actions/workflows/ci.yml)
+[![Integração](https://github.com/lucianoon/mcp-dados-br/actions/workflows/integracao.yml/badge.svg)](https://github.com/lucianoon/mcp-dados-br/actions/workflows/integracao.yml)
 [![PyPI](https://img.shields.io/pypi/v/mcp-dados-br?color=2e7d32&label=PyPI)](https://pypi.org/project/mcp-dados-br/)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org)
 [![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-green.svg)](LICENSE)
